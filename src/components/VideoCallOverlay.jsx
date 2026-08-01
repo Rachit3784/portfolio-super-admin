@@ -13,6 +13,21 @@ const ICE_SERVERS = {
     { urls: 'stun:stun3.l.google.com:19302' },
     { urls: 'stun:stun4.l.google.com:19302' },
     { urls: 'stun:global.stun.twilio.com:3478' },
+    {
+      urls: 'turn:openrelay.metered.ca:80',
+      username: 'openrelayproject',
+      credential: 'openrelayproject',
+    },
+    {
+      urls: 'turn:openrelay.metered.ca:443',
+      username: 'openrelayproject',
+      credential: 'openrelayproject',
+    },
+    {
+      urls: 'turn:openrelay.metered.ca:443?transport=tcp',
+      username: 'openrelayproject',
+      credential: 'openrelayproject',
+    },
   ],
 };
 
@@ -47,6 +62,9 @@ const VideoCallOverlay = ({ isOpen, onClose, targetUser, isIncoming, incomingSig
 
     if (isIncoming) {
       startRingtoneSound();
+      if (typeof navigator !== 'undefined' && navigator.vibrate) {
+        navigator.vibrate([400, 200, 400, 200, 400]);
+      }
     }
 
     let mounted = true;
@@ -83,6 +101,14 @@ const VideoCallOverlay = ({ isOpen, onClose, targetUser, isIncoming, incomingSig
           peer.addTrack(track, stream);
         });
 
+        peer.oniceconnectionstatechange = () => {
+          console.log('🌐 WebRTC Admin ICE Connection State:', peer.iceConnectionState);
+          if (peer.iceConnectionState === 'connected' || peer.iceConnectionState === 'completed') {
+            setCallState('connected');
+            stopRingtoneSound();
+          }
+        };
+
         peer.ontrack = (event) => {
           console.log('📹 WebRTC Admin remote track received:', event);
           const remoteStream = (event.streams && event.streams[0]) ? event.streams[0] : new MediaStream([event.track]);
@@ -105,7 +131,7 @@ const VideoCallOverlay = ({ isOpen, onClose, targetUser, isIncoming, incomingSig
 
         // Outbound call to recruiter
         if (!isIncoming && targetId) {
-          const offer = await peer.createOffer();
+          const offer = await peer.createOffer({ offerToReceiveAudio: true, offerToReceiveVideo: true });
           await peer.setLocalDescription(offer);
           socket.emit('call_user', {
             userToCall: targetId,
@@ -168,7 +194,7 @@ const VideoCallOverlay = ({ isOpen, onClose, targetUser, isIncoming, incomingSig
     try {
       await peerRef.current.setRemoteDescription(new RTCSessionDescription(incomingSignal));
       await flushIceCandidates();
-      const answer = await peerRef.createAnswer();
+      const answer = await peerRef.createAnswer({ offerToReceiveAudio: true, offerToReceiveVideo: true });
       await peerRef.current.setLocalDescription(answer);
       const targetId = targetUser?._id || targetUser?.id;
       socket.emit('answer_call', { to: targetId || 'user', signal: answer });

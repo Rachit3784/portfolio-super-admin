@@ -107,6 +107,10 @@ const Dashboard = ({ admin, onLogout }) => {
       }
     });
 
+    if (typeof window !== 'undefined' && 'serviceWorker' in navigator) {
+      navigator.serviceWorker.register('/sw.js').catch(() => {});
+    }
+
     // Incoming WebRTC Video Call from recruiter
     socket.on('incoming_call', ({ signal, from, name }) => {
       const callingUser = users.find((u) => u._id === from) || { id: from, name: name || 'Recruiter' };
@@ -115,8 +119,25 @@ const Dashboard = ({ admin, onLogout }) => {
       setIsIncomingCall(true);
       setCallModalOpen(true);
 
-      // Trigger OS/Browser Native Notification
-      if (typeof window !== 'undefined' && 'Notification' in window && Notification.permission === 'granted') {
+      // Trigger OS / Service Worker Background Notification
+      if (typeof window !== 'undefined' && 'serviceWorker' in navigator && Notification.permission === 'granted') {
+        navigator.serviceWorker.ready.then((reg) => {
+          reg.showNotification('📹 Incoming WebRTC Video Call', {
+            body: `${name || 'Recruiter'} is calling you... Tap to answer.`,
+            icon: '/favicon.ico',
+            vibrate: [400, 200, 400, 200, 400],
+            tag: 'incoming-admin-call',
+            renotify: true,
+            requireInteraction: true,
+            data: { url: '/' },
+          });
+        }).catch(() => {
+          new Notification('📹 Incoming WebRTC Video Call', {
+            body: `${name || 'Recruiter'} is calling you on WebRTC Video Meeting...`,
+            icon: '/favicon.ico',
+          });
+        });
+      } else if (typeof window !== 'undefined' && 'Notification' in window && Notification.permission === 'granted') {
         new Notification('📹 Incoming WebRTC Video Call', {
           body: `${name || 'Recruiter'} is calling you on WebRTC Video Meeting...`,
           icon: '/favicon.ico',
