@@ -3,6 +3,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { motion } from 'framer-motion';
 import { Mic, MicOff, Video, VideoOff, PhoneOff, PhoneCall, Shield, User } from 'lucide-react';
 import { startRingtoneSound, stopRingtoneSound } from '../utils/audioUtils';
+import { socket } from '../socket';
 
 const ICE_SERVERS = {
   iceServers: [
