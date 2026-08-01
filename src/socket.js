@@ -10,6 +10,8 @@ const SERVER_URL =
 export const socket = io(SERVER_URL, {
   autoConnect: false,
   reconnection: true,
-  reconnectionAttempts: 10,
+  reconnectionAttempts: 20,
   reconnectionDelay: 1000,
+  transports: ['websocket', 'polling'],
+  secure: true,
 });
