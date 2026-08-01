@@ -2,12 +2,16 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { motion } from 'framer-motion';
 import { Mic, MicOff, Video, VideoOff, PhoneOff, PhoneCall, Shield, User } from 'lucide-react';
-import { socket } from '../socket';
+import { startRingtoneSound, stopRingtoneSound } from '../utils/audioUtils';
 
 const ICE_SERVERS = {
   iceServers: [
     { urls: 'stun:stun.l.google.com:19302' },
     { urls: 'stun:stun1.l.google.com:19302' },
+    { urls: 'stun:stun2.l.google.com:19302' },
+    { urls: 'stun:stun3.l.google.com:19302' },
+    { urls: 'stun:stun4.l.google.com:19302' },
+    { urls: 'stun:global.stun.twilio.com:3478' },
   ],
 };
 
@@ -16,15 +20,33 @@ const VideoCallOverlay = ({ isOpen, onClose, targetUser, isIncoming, incomingSig
   const [camOn, setCamOn]         = useState(true);
   const [callState, setCallState] = useState(isIncoming ? 'incoming' : 'calling');
 
-  const localVideoRef  = useRef(null);
-  const remoteVideoRef = useRef(null);
-  const peerRef        = useRef(null);
-  const localStreamRef = useRef(null);
+  const localVideoRef        = useRef(null);
+  const remoteVideoRef       = useRef(null);
+  const peerRef              = useRef(null);
+  const localStreamRef       = useRef(null);
+  const pendingCandidatesRef = useRef([]);
+
+  const flushIceCandidates = async () => {
+    if (!peerRef.current || !peerRef.current.remoteDescription) return;
+    while (pendingCandidatesRef.current.length > 0) {
+      const cand = pendingCandidatesRef.current.shift();
+      try {
+        await peerRef.current.addIceCandidate(new RTCIceCandidate(cand));
+      } catch (e) {
+        console.warn('Error flushing ICE candidate in Admin Overlay:', e);
+      }
+    }
+  };
 
   useEffect(() => {
     if (!isOpen) return;
 
     setCallState(isIncoming ? 'incoming' : 'calling');
+    pendingCandidatesRef.current = [];
+
+    if (isIncoming) {
+      startRingtoneSound();
+    }
 
     let mounted = true;
 
@@ -32,14 +54,16 @@ const VideoCallOverlay = ({ isOpen, onClose, targetUser, isIncoming, incomingSig
       try {
         let stream;
         try {
-          stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+          stream = await navigator.mediaDevices.getUserMedia({
+            video: { width: { ideal: 1280 }, height: { ideal: 720 } },
+            audio: { echoCancellation: true, noiseSuppression: true },
+          });
         } catch (camErr) {
-          console.warn('Camera locked or busy on same laptop, falling back to audio stream', camErr);
+          console.warn('Camera/mic fallback attempt', camErr);
           try {
+            stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+          } catch {
             stream = await navigator.mediaDevices.getUserMedia({ video: false, audio: true });
-          } catch (audioErr) {
-            console.error('Audio stream also unavailable', audioErr);
-            throw audioErr;
           }
         }
 
@@ -53,16 +77,21 @@ const VideoCallOverlay = ({ isOpen, onClose, targetUser, isIncoming, incomingSig
         const peer = new RTCPeerConnection(ICE_SERVERS);
         peerRef.current = peer;
 
-        stream.getTracks().forEach((track) => peer.addTrack(track, stream));
+        stream.getTracks().forEach((track) => {
+          track.enabled = true;
+          peer.addTrack(track, stream);
+        });
 
         peer.ontrack = (event) => {
-          if (remoteVideoRef.current && event.streams[0]) {
-            remoteVideoRef.current.srcObject = event.streams[0];
+          console.log('📹 WebRTC Admin remote track received:', event);
+          const remoteStream = (event.streams && event.streams[0]) ? event.streams[0] : new MediaStream([event.track]);
+          if (remoteVideoRef.current) {
+            remoteVideoRef.current.srcObject = remoteStream;
             remoteVideoRef.current.play().catch((e) => console.warn('Remote video play warning:', e));
-            // Ensure audio tracks are enabled
-            event.streams[0].getAudioTracks().forEach((t) => (t.enabled = true));
-            setCallState('connected');
+            remoteStream.getAudioTracks().forEach((t) => (t.enabled = true));
           }
+          setCallState('connected');
+          stopRingtoneSound();
         };
 
         const targetId = targetUser?._id || targetUser?.id;
@@ -87,6 +116,7 @@ const VideoCallOverlay = ({ isOpen, onClose, targetUser, isIncoming, incomingSig
       } catch (err) {
         console.error('Camera/Mic access error', err);
         setCallState('ended');
+        stopRingtoneSound();
       }
     };
 
@@ -95,20 +125,27 @@ const VideoCallOverlay = ({ isOpen, onClose, targetUser, isIncoming, incomingSig
     socket.on('call_accepted', async (signal) => {
       if (peerRef.current) {
         await peerRef.current.setRemoteDescription(new RTCSessionDescription(signal));
+        await flushIceCandidates();
         setCallState('connected');
+        stopRingtoneSound();
       }
     });
 
-    socket.on('user_busy', ({ message }) => {
+    socket.on('user_busy', () => {
       setCallState('busy');
+      stopRingtoneSound();
     });
 
     socket.on('ice_candidate', async (candidate) => {
-      if (peerRef.current && candidate) {
-        try {
-          await peerRef.current.addIceCandidate(new RTCIceCandidate(candidate));
-        } catch (e) {
-          console.error('Error adding ICE candidate', e);
+      if (candidate) {
+        if (peerRef.current && peerRef.current.remoteDescription && peerRef.current.remoteDescription.type) {
+          try {
+            await peerRef.current.addIceCandidate(new RTCIceCandidate(candidate));
+          } catch (e) {
+            console.error('Error adding ICE candidate directly in Admin', e);
+          }
+        } else {
+          pendingCandidatesRef.current.push(candidate);
         }
       }
     });
@@ -119,14 +156,17 @@ const VideoCallOverlay = ({ isOpen, onClose, targetUser, isIncoming, incomingSig
 
     return () => {
       mounted = false;
+      stopRingtoneSound();
       cleanup();
     };
   }, [isOpen, isIncoming, targetUser]);
 
   const acceptCall = async () => {
+    stopRingtoneSound();
     if (!peerRef.current || !incomingSignal) return;
     try {
       await peerRef.current.setRemoteDescription(new RTCSessionDescription(incomingSignal));
+      await flushIceCandidates();
       const answer = await peerRef.createAnswer();
       await peerRef.current.setLocalDescription(answer);
       const targetId = targetUser?._id || targetUser?.id;
@@ -138,6 +178,7 @@ const VideoCallOverlay = ({ isOpen, onClose, targetUser, isIncoming, incomingSig
   };
 
   const cleanup = () => {
+    stopRingtoneSound();
     if (localStreamRef.current) {
       localStreamRef.current.getTracks().forEach((t) => t.stop());
       localStreamRef.current = null;
@@ -149,6 +190,7 @@ const VideoCallOverlay = ({ isOpen, onClose, targetUser, isIncoming, incomingSig
   };
 
   const endCall = () => {
+    stopRingtoneSound();
     const targetId = targetUser?._id || targetUser?.id;
     if (targetId) {
       socket.emit('end_call', { to: targetId });
@@ -242,11 +284,11 @@ const VideoCallOverlay = ({ isOpen, onClose, targetUser, isIncoming, incomingSig
           )}
 
           {/* Local PIP */}
-          <div className="absolute bottom-6 right-6 w-44 h-32 rounded-2xl overflow-hidden border-2 border-white/20 shadow-2xl bg-zinc-900 z-10">
+          <div className="absolute bottom-16 right-3 sm:bottom-6 sm:right-6 w-28 h-20 sm:w-44 sm:h-32 rounded-2xl overflow-hidden border-2 border-white/20 shadow-2xl bg-zinc-900 z-10">
             <video ref={localVideoRef} autoPlay muted playsInline className="w-full h-full object-cover transform -scale-x-100" />
             {!camOn && (
               <div className="absolute inset-0 bg-zinc-950 flex items-center justify-center text-gray-500">
-                <User size={24} />
+                <User size={20} />
               </div>
             )}
           </div>

@@ -14,12 +14,27 @@ const Login = ({ onLoginSuccess }) => {
     setError('');
     setLoading(true);
 
+    if (typeof window !== 'undefined' && 'Notification' in window && Notification.permission === 'default') {
+      try { await Notification.requestPermission(); } catch {}
+    }
+
+    let devId = localStorage.getItem('rachit_admin_device_id');
+    if (!devId) {
+      devId = 'admin_dev_' + Date.now() + '_' + Math.random().toString(36).substring(2, 9);
+      localStorage.setItem('rachit_admin_device_id', devId);
+    }
+    const notifId = `admin_notif_${devId}`;
+
     try {
-      const SERVER_URL = import.meta.env.VITE_SERVER_URL || 'http://localhost:5000';
+      const SERVER_URL =
+        import.meta.env.VITE_SERVER_URL ||
+        import.meta.env.VITE_SOCKET_URL ||
+        import.meta.env.NEXT_PUBLIC_SERVER_URL ||
+        'http://localhost:5000';
       const res = await fetch(`${SERVER_URL}/api/admin/login`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email: email.trim(), password }),
+        body: JSON.stringify({ email: email.trim(), password, deviceId: devId, notificationId: notifId }),
       });
       const data = await res.json();
 

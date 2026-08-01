@@ -1,9 +1,10 @@
 // D:\Portfolio\rachit-super-admin-portfolio\src\components\Dashboard.jsx
 import React, { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Users, Send, Video, LogOut, MessageSquare, Shield, CheckCheck, Loader2 } from 'lucide-react';
+import { Users, Send, Video, LogOut, MessageSquare, Shield, CheckCheck, Loader2, ChevronLeft } from 'lucide-react';
 import { socket } from '../socket';
 import VideoCallOverlay from './VideoCallOverlay';
+import { playMessageSound } from '../utils/audioUtils';
 
 const Dashboard = ({ admin, onLogout }) => {
   const [users, setUsers]                 = useState([]);
@@ -19,7 +20,11 @@ const Dashboard = ({ admin, onLogout }) => {
 
   const bottomRef = useRef(null);
 
-  const SERVER_URL = import.meta.env.VITE_SERVER_URL || 'http://localhost:5000';
+  const SERVER_URL =
+    import.meta.env.VITE_SERVER_URL ||
+    import.meta.env.VITE_SOCKET_URL ||
+    import.meta.env.NEXT_PUBLIC_SERVER_URL ||
+    'http://localhost:5000';
 
   /* ── Load Recruiter Contacts ── */
   const fetchUsers = async () => {
@@ -28,7 +33,8 @@ const Dashboard = ({ admin, onLogout }) => {
       const data = await res.json();
       if (res.ok) {
         setUsers(data.users || []);
-        if (!selectedUser && data.users?.length) {
+        // Auto select first user on desktop if none selected
+        if (typeof window !== 'undefined' && window.innerWidth >= 768 && !selectedUser && data.users?.length) {
           setSelectedUser(data.users[0]);
         }
       }
@@ -67,11 +73,25 @@ const Dashboard = ({ admin, onLogout }) => {
 
   /* ── Socket.io Listeners ── */
   useEffect(() => {
+    let devId = typeof window !== 'undefined' ? localStorage.getItem('rachit_admin_device_id') : null;
+    if (!devId) {
+      devId = 'admin_dev_' + Date.now() + '_' + Math.random().toString(36).substring(2, 9);
+      if (typeof window !== 'undefined') localStorage.setItem('rachit_admin_device_id', devId);
+    }
+
     socket.connect();
-    socket.emit('join_room', { userId: 'admin', role: 'admin' });
+    socket.emit('join_room', { userId: 'admin', role: 'admin', deviceId: devId, notificationId: `admin_notif_${devId}` });
+
+    // Single active admin session invalidation
+    socket.on('admin_session_invalidated', (data) => {
+      console.warn('Admin session invalidated:', data);
+      alert(data.message || 'Super Admin portal logged in on another device or browser. Session ended.');
+      if (onLogout) onLogout();
+    });
 
     // Live new recruiter message
     socket.on('new_recruiter_message', ({ userId, message }) => {
+      playMessageSound();
       fetchUsers(); // Refresh user list order
       if (selectedUser && selectedUser._id === userId) {
         setMessages((prev) => [...prev, message]);
@@ -105,12 +125,13 @@ const Dashboard = ({ admin, onLogout }) => {
     });
 
     return () => {
+      socket.off('admin_session_invalidated');
       socket.off('new_recruiter_message');
       socket.off('admin_reply_sent');
       socket.off('incoming_call');
       socket.disconnect();
     };
-  }, [selectedUser, users]);
+  }, [selectedUser, users, onLogout]);
 
   /* ── Send Admin Reply ── */
   const handleSend = async (e) => {
@@ -138,8 +159,10 @@ const Dashboard = ({ admin, onLogout }) => {
         incomingSignal={incomingSignal}
       />
 
-      {/* ── Left Sidebar: Recruiter Contact List (30% Width) ── */}
-      <div className="w-full sm:w-[320px] lg:w-[360px] h-full bg-white/[0.02] backdrop-blur-2xl border-r border-white/10 flex flex-col flex-shrink-0">
+      {/* ── Left Sidebar: Recruiter Contact List (Master View) ── */}
+      <div className={`w-full md:w-[320px] lg:w-[360px] h-full bg-white/[0.02] backdrop-blur-2xl border-r border-white/10 flex flex-col flex-shrink-0 ${
+        selectedUser ? 'hidden md:flex' : 'flex'
+      }`}>
 
         {/* Sidebar Header */}
         <div className="p-4 border-b border-white/10 bg-white/[0.03] flex items-center justify-between flex-shrink-0">
@@ -209,39 +232,49 @@ const Dashboard = ({ admin, onLogout }) => {
         </div>
       </div>
 
-      {/* ── Main View: Selected Recruiter Live Chat & WebRTC Call (70% Width) ── */}
-      <div className="flex-1 h-full flex flex-col bg-[#030303]">
+      {/* ── Main View: Selected Recruiter Live Chat & WebRTC Call (Detail View) ── */}
+      <div className={`flex-1 h-full flex flex-col bg-[#030303] ${
+        selectedUser ? 'flex' : 'hidden md:flex'
+      }`}>
         {selectedUser ? (
           <>
             {/* Top Bar */}
-            <div className="flex-shrink-0 px-6 py-4 border-b border-white/10 bg-white/[0.03] backdrop-blur-2xl flex items-center justify-between">
-              <div className="flex items-center gap-3">
-                <div className="w-10 h-10 rounded-2xl bg-gradient-to-br from-orange-500 to-orange-600 flex items-center justify-center text-white font-bold shadow-md">
+            <div className="flex-shrink-0 px-4 sm:px-6 py-4 border-b border-white/10 bg-white/[0.03] backdrop-blur-2xl flex items-center justify-between">
+              <div className="flex items-center gap-2.5">
+                {/* Mobile Back Button */}
+                <button
+                  onClick={() => setSelectedUser(null)}
+                  className="md:hidden w-9 h-9 rounded-2xl bg-white/5 hover:bg-white/10 border border-white/10 flex items-center justify-center text-gray-300 hover:text-white transition-all cursor-pointer flex-shrink-0"
+                  title="Back to Contacts"
+                >
+                  <ChevronLeft size={18} />
+                </button>
+                <div className="w-10 h-10 rounded-2xl bg-gradient-to-br from-orange-500 to-orange-600 flex items-center justify-center text-white font-bold shadow-md flex-shrink-0">
                   {selectedUser.name[0]}
                 </div>
-                <div>
-                  <h3 className="text-base font-bold text-white leading-tight font-display">{selectedUser.name}</h3>
-                  <p className="text-xs text-gray-400 font-mono">{selectedUser.email}</p>
+                <div className="min-w-0">
+                  <h3 className="text-sm sm:text-base font-bold text-white leading-tight font-display truncate">{selectedUser.name}</h3>
+                  <p className="text-[11px] sm:text-xs text-gray-400 font-mono truncate">{selectedUser.email}</p>
                 </div>
               </div>
 
               {/* Start WebRTC Video Call Button */}
               <button
                 onClick={() => { setCallerUser(selectedUser); setIsIncomingCall(false); setCallModalOpen(true); }}
-                className="flex items-center gap-2 px-4 py-2 rounded-2xl bg-gradient-to-r from-orange-500 to-orange-600 hover:from-orange-600 hover:to-orange-700 text-white font-extrabold text-xs shadow-lg shadow-orange-500/30 transition-all cursor-pointer"
+                className="flex items-center gap-1.5 sm:gap-2 px-3 sm:px-4 py-2 rounded-2xl bg-gradient-to-r from-orange-500 to-orange-600 hover:from-orange-600 hover:to-orange-700 text-white font-extrabold text-xs shadow-lg shadow-orange-500/30 transition-all cursor-pointer flex-shrink-0"
               >
-                <Video size={16} /> Call Recruiter (WebRTC)
+                <Video size={15} /> <span className="hidden sm:inline">Call Recruiter (WebRTC)</span>
               </button>
             </div>
 
             {/* Message Stream */}
-            <div className="flex-1 overflow-y-auto p-6 space-y-3">
+            <div className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-3">
               {messages.map((m, i) => {
                 const isAdmin = m.role === 'admin';
                 return (
                   <div key={m._id || i} className={`flex ${isAdmin ? 'justify-end' : 'justify-start'}`}>
                     <div
-                      className={`max-w-[70%] p-3.5 rounded-2xl text-sm leading-relaxed break-words ${
+                      className={`max-w-[85%] sm:max-w-[70%] p-3.5 rounded-2xl text-sm leading-relaxed break-words ${
                         isAdmin
                           ? 'bg-gradient-to-br from-orange-500 to-orange-600 text-white rounded-tr-sm shadow-lg'
                           : 'bg-white/5 border border-white/10 text-gray-200 rounded-tl-sm'
@@ -259,7 +292,7 @@ const Dashboard = ({ admin, onLogout }) => {
             </div>
 
             {/* Input Bar */}
-            <form onSubmit={handleSend} className="p-4 border-t border-white/10 bg-white/[0.02] flex items-center gap-2">
+            <form onSubmit={handleSend} className="p-3 sm:p-4 border-t border-white/10 bg-white/[0.02] flex items-center gap-2">
               <input
                 type="text"
                 value={inputText}
@@ -270,7 +303,7 @@ const Dashboard = ({ admin, onLogout }) => {
               <button
                 type="submit"
                 disabled={!inputText.trim()}
-                className="w-11 h-11 rounded-2xl bg-orange-500 hover:bg-orange-600 text-white flex items-center justify-center disabled:opacity-40 shadow-lg shadow-orange-500/30 cursor-pointer"
+                className="w-11 h-11 rounded-2xl bg-orange-500 hover:bg-orange-600 text-white flex items-center justify-center disabled:opacity-40 shadow-lg shadow-orange-500/30 cursor-pointer flex-shrink-0"
               >
                 <Send size={16} />
               </button>
